@@ -1,10 +1,19 @@
 # Mention
+
 Custom Salesforce Quill Mention.
 
-[Read about package creation](PackageCreationReadme.md)
+The link to documentation: https://docs.google.com/document/d/1H1D34UncLlbhjM6_dZWso0KZbyy7lcCqqeVCCyIMNwI/edit?usp=sharing
 
-[Read about initialization of repository](firstInstallReadme.md)
+Detailed usage documentation: https://docs.google.com/document/d/16UfAMUVsIU0iHoMVC4emNQiY3ASa3umWDKlmu-ikODI/edit?usp=sharing
 
-## TODO
+Latest package version to install can be found at the bottom of this file: https://github.com/Patlatus/Quill-Mention/blob/dev/packaged/sfdx-project.json
 
-Need to design examples: how this component will be used?
+## Examples
+
+Examples are located in both unpackaged folder (which use unpackaged code base version):
+
+https://github.com/Patlatus/Quill-Mention/tree/dev/unpackaged/examples
+
+and inside packaged folder (which use packaged version of mention component):
+
+https://github.com/Patlatus/Quill-Mention/tree/dev/packaged/examples
