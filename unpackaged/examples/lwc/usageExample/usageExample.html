@@ -1,0 +1,10 @@
+<template>
+    <c-mention users={users} content-editable onedit={handleEdit}></c-mention>
+
+    Text : {text} <br/>
+
+    Deltas: {deltas}
+
+    <c-mention users={userDTOs} content-editable match-function={matchFunction} render-item={renderItem}></c-mention>
+
+</template>

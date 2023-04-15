@@ -1,0 +1,362 @@
+name: Manual Install Script
+
+on:
+  workflow_dispatch:
+    inputs:
+      pid:
+        description: "Package Version Subscriber Install Id (starts with 04t...), by default the last package version will be taken"
+        required: false
+      destination:
+        description: "Authentication Token for the Destination organization to Install (run `sfdx force:org:display -u qa2 --verbose` to find `Sfdx Auth Url` for your org), by default qa2 will be used"
+        required: false
+
+jobs:
+  install-package-version-to-qa2:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Salesforce CLI
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz
+          mkdir sfdx-cli
+          tar xJf sfdx-linux-amd64.tar.xz -C sfdx-cli --strip-components 1
+          ./sfdx-cli/install
+          echo ${{github.ref}}
+          echo ${{github.event.ref}}
+          
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+        with:
+          ref: dev
+
+      - name: "Authenticate Dev Hub for Packaging"
+        run: |
+          echo ${{secrets.SF_ORG_PACKAGING_DH}} > ./DEVHUB_SFDX_URL.txt
+          sfdx auth:sfdxurl:store -f ./DEVHUB_SFDX_URL.txt -a DH -d
+
+      - name: "Authenticate QA2"
+        run: |
+          destination=${{ github.event.inputs.destination }}
+          echo "destination: $destination"
+          if [ -z "$destination" ]
+          then
+            echo "Parameter destination is missing. Will use the QA2"
+            destination=${{secrets.SF_ORG_QA}}
+          fi
+          echo $destination > ./qa2.txt
+          sfdx auth:sfdxurl:store -f ./qa2.txt -a qa2
+      
+      - name: "Uninstall Previous Custom Feature Parameters Application Package Version from QA2"
+        id: "uninstallQA"
+        run: |
+          cd packaged
+          sfdx force:config:set defaultusername=qa2
+
+          pn="Custom Feature Parameters Application"
+          previousPackageVersionName=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==\"$pn\") .SubscriberPackageVersionName" -r)
+          previousPackageVersionNumber=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==\"$pn\") .SubscriberPackageVersionNumber" -r)
+          previousPackageVersion=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==\"$pn\") .SubscriberPackageVersionId" -r)
+
+          username=$(sfdx force:org:display --json | jq '.result.username' -r)
+          echo "Username = $username"
+          echo "Last part is ${username##*.}"
+          if [ -z "$previousPackageVersion" ]
+          then
+            previousResult="No previous Custom Feature Parameters Application package version detected, no need to uninstall"
+            echo "::set-output name=result::true"
+          else
+            echo $(sfdx force:package:uninstall -p $previousPackageVersion --json) > uninstall.txt
+            v=$(cat uninstall.txt | tr '\n' ' ' | jq '.status')
+            s=$(cat uninstall.txt | tr '\n' ' ' | jq '.result.Status')
+            echo "status=$v"
+            echo "Result.Status=$s"
+            if [[ $v != 0 ]] 
+            then 
+                echo "Uninstall failed"
+                m=$(cat uninstall.txt | tr '\n' ' ' | jq '.message' -r)
+                echo "Error message: $m"
+                echo "::set-output name=result::false"
+                previousResult="Uninstall Failed for the previous Custom Feature Parameters Application Package version $previousPackageVersionNumber ($previousPackageVersionName) with subscriber install id $previousPackageVersion from ${username##*.} sandbox (${username}) with errors $m"
+            else
+              while [[ ($v == 0) && ($s == '"InProgress"') ]]
+              do 
+                  sleep 10
+                  v=$(sfdx force:package:uninstall:report -i $(cat uninstall.txt | tr '\n' ' ' | jq '.result.Id' -r) --json | jq '.status')
+                  s=$(sfdx force:package:uninstall:report -i $(cat uninstall.txt | tr '\n' ' ' | jq '.result.Id' -r) --json | jq '.result.Status')
+                  echo "status=$v"
+                  echo "Result.Status=$s"
+              done
+              if [[ ($v == 0) && ($s == '"Success"')]] 
+              then 
+                  echo "Uninstalled successfully"
+                  echo "::set-output name=result::true"
+                  previousResult="Previous Custom Feature Parameters Application Package version $previousPackageVersionNumber ($previousPackageVersionName) with subscriber install id $previousPackageVersion was uninstalled from ${username##*.} sandbox (${username})"
+              fi
+              if [[ $v != 0 ]] 
+              then 
+                  echo "Uninstall failed"
+                  m=$(sfdx force:package:uninstall:report -i $(cat uninstall.txt | tr '\n' ' ' | jq '.result.Id' -r) --json | jq '.message' -r)
+                  echo "::set-output name=result::false"
+                  previousResult="Uninstall Failed for the previous Custom Feature Parameters Application Package version $previousPackageVersionNumber ($previousPackageVersionName) with subscriber install id $previousPackageVersion from ${username##*.} sandbox (${username}) with errors $m"
+              fi
+            fi
+          fi
+          echo $previousResult
+          echo "::set-output name=previous::$previousResult"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: uninstallQANofify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.uninstallQA.outputs.previous }}
+          slack-optional-icon_emoji: ":fire:"
+
+      - name: Result from "Send Message"
+        run: echo "The result was ${{ steps.uninstallQANofify.outputs.slack-result }}"
+
+      - name: "Uninstall Previous Package Version from QA2"
+        id: "uninstall"
+        if: ${{ steps.uninstallQA.outputs.result == 'true' }}
+        run: |
+          cd packaged
+          sfdx force:config:set defaultusername=qa2
+
+          pn=$(cat sfdx-project.json | jq '.packageAliases | keys [0]')
+          previousPackageVersionName=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionName" -r)
+          previousPackageVersionNumber=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionNumber" -r)
+          previousPackageVersion=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionId" -r)
+
+          username=$(sfdx force:org:display --json | jq '.result.username' -r)
+          echo "Username = $username"
+          echo "Last part is ${username##*.}"
+          if [ -z "$previousPackageVersion" ]
+          then
+            previousResult="No previous package version detected, no need to uninstall"
+            echo "::set-output name=result::true"
+          else
+            sandbox=${username##*.}
+            echo "Sandbox : $sandbox"
+            if [[ ("$sandbox" == "qa2") || ("$sandbox" == "d")]] ; then
+              sfdx force:source:deploy -p ../unpackaged/removeReferences --json > removeReferences.txt || true
+              echo "Deploying remove references"
+              deploy=$(cat removeReferences.txt)
+              echo "removeReferences deploy: $deploy"
+              status=$(echo $deploy | jq '.status')
+              echo "status: $status"
+              if [ $status == 0 ]; then
+                echo "Status 0 means OK; deployed remove references folder"
+              else
+                firstError=$(echo $deploy | tr '\r\n' ' '| jq '.result[0].error')
+                echo "Status 1 means error, remove references folder is not deployed. First error: $firstError"
+              fi
+            else
+              echo "Not qa2, not deploying remove references"
+            fi
+
+            echo $(sfdx force:package:uninstall -p $previousPackageVersion --json) > uninstall.txt
+            v=$(cat uninstall.txt | tr '\n' ' ' | jq '.status')
+            s=$(cat uninstall.txt | tr '\n' ' ' | jq '.result.Status')
+            echo "status=$v"
+            echo "Result.Status=$s"
+            if [[ $v != 0 ]] 
+            then 
+                echo "Uninstall failed"
+                m=$(cat uninstall.txt | tr '\n' ' ' | jq '.message' -r)
+                echo "Error message: $m"
+                echo "::set-output name=result::false"
+                previousResult="Uninstall Failed for the previous $pn package version $previousPackageVersionNumber ($previousPackageVersionName) with subscriber install id $previousPackageVersion from ${username##*.} sandbox ($username) with errors $m"
+            else
+              while [[ ($v == 0) && ($s == '"InProgress"') ]]
+              do 
+                  sleep 10
+                  v=$(sfdx force:package:uninstall:report -i $(cat uninstall.txt | tr '\n' ' ' | jq '.result.Id' -r) --json | jq '.status')
+                  s=$(sfdx force:package:uninstall:report -i $(cat uninstall.txt | tr '\n' ' ' | jq '.result.Id' -r) --json | jq '.result.Status')
+                  echo "status=$v"
+                  echo "Result.Status=$s"
+              done
+              if [[ ($v == 0) && ($s == '"Success"')]] 
+              then 
+                  echo "Uninstalled successfully"
+                  echo "::set-output name=result::true"
+                  previousResult="Previous $pn package version $previousPackageVersionNumber ($previousPackageVersionName) with subscriber install id $previousPackageVersion was uninstalled from ${username##*.} sandbox ($username)"
+              fi
+              if [[ $v != 0 ]] 
+              then 
+                  echo "Uninstall failed"
+                  m=$(sfdx force:package:uninstall:report -i $(cat uninstall.txt | tr '\n' ' ' | jq '.result.Id' -r) --json | jq '.message' -r)
+                  echo "::set-output name=result::false"
+                  previousResult="Uninstall Failed for the previous $pn Package version $previousPackageVersionNumber ($previousPackageVersionName) with subscriber install id $previousPackageVersion from ${username##*.} sandbox ($username) with errors $m"
+              fi
+            fi
+          fi
+
+          echo $previousResult
+          echo "::set-output name=previous::$previousResult"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        if: ${{ steps.uninstallQA.outputs.result == 'true' }}
+        id: uninstallNofify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.uninstall.outputs.previous }}
+          slack-optional-icon_emoji: ":fire:"
+
+      - name: Result from "Send Message"
+        if: ${{ steps.uninstallQA.outputs.result == 'true' }}
+        run: echo "The result was ${{ steps.uninstallNofify.outputs.slack-result }}"
+
+      - name: "Install Package Version to QA2"
+        id: "install"
+        if: ${{ steps.uninstallQA.outputs.result == 'true' && steps.uninstall.outputs.result == 'true' }}
+        run: |
+          cd packaged
+          pid=${{ github.event.inputs.pid }}
+          if [ -z "$pid" ]
+          then
+            echo "Parameter pid is missing. Will use the last build version"
+            pn=$(cat sfdx-project.json | jq '.packageAliases | keys [0]' -r)
+            pid=$(cat sfdx-project.json | jq --arg pn "$pn" '[.packageAliases | to_entries[] | select(.key | contains($pn))] [-1].value' -r)
+            echo "Pid found: $pid"
+          fi
+          version=$(sfdx force:package:version:list --json | jq ".result [] | select(.SubscriberPackageVersionId==\"$pid\") .Version" -r)
+
+          sfdx force:config:set defaultusername=qa2
+
+          username=$(sfdx force:org:display --json | jq '.result.username' -r)
+          echo "Username = $username"
+          echo "Last part is ${username##*.}"
+
+          echo $(sfdx force:package:install -p $pid -r --json) > install.txt
+          v=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.status')
+          s=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.result.Status')
+          echo "status=$v"
+          echo "Result.Status=$s"
+          while [[ ($v == 0) && ($s == '"IN_PROGRESS"') ]]
+          do 
+              sleep 10
+              v=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.status')
+              s=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.result.Status')
+              echo "status=$v"
+              echo "Result.Status=$s"
+          done
+          if [[ ($v == 0) && ($s == '"SUCCESS"')]] 
+          then 
+              echo "Installed successfully"
+              echo "::set-output name=success::true"
+              result="Latest Managed Beta version $version with subscriber install id $pid was installed into ${username##*.} sandbox ($username)"
+
+              sandbox=${username##*.}
+              echo "Sandbox : $sandbox"
+              if [ "$sandbox" == "qa2" ]; then
+                echo "Adding references"
+                sfdx force:source:deploy -p ../unpackaged/addReferencesQA2 --json > addReferences.txt || true
+                deploy=$(cat addReferences.txt)
+                echo "addReferences deploy: $deploy"
+                status=$(echo $deploy | jq '.status')
+                echo "status: $status"
+                if [ $status == 0 ]; then
+                  echo "Status 0 means OK; deployed add references folder"
+                else
+                  firstError=$(echo $deploy | tr '\r\n' ' '| jq '.result[0].error')
+                  echo "Status 1 means error, add references folder is not deployed. First error: $firstError"
+                fi
+              else
+                echo "Not qa2, not deploying add references"
+              fi
+          fi
+          if [[ $v != 0 ]] 
+          then 
+              echo "Install failed"
+              m=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.message' -r)
+              echo "Error message: $m"
+              echo "::set-output name=success::false"
+              result="Install of the latest Managed Beta version $version with subscriber install id $pid into ${username##*.} sandbox ($username) failed with errors $m"
+          fi
+          
+          echo "::set-output name=result::$result"
+          sandbox=${username##*.}
+          echo "::set-output name=sandbox::$sandbox"
+ 
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        if: ${{ steps.uninstallQA.outputs.result == 'true' && steps.uninstall.outputs.result == 'true' }}
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.install.outputs.result }}
+          slack-optional-icon_emoji: ":fire:"
+      - name: Result from "Send Message"
+        if: ${{ steps.uninstallQA.outputs.result == 'true' && steps.uninstall.outputs.result == 'true' }}
+        run: echo "The result was ${{ steps.notify.outputs.slack-result }}"
+        
+      - name: "Install Custom Feature Parameters Application"
+        id: "installQAConsole"
+        if: ${{ steps.uninstallQA.outputs.result == 'true' && steps.uninstall.outputs.result == 'true' && steps.install.outputs.success == 'true'}}
+        run: |
+          cd packaged
+          sfdx force:config:set defaultusername=qa2
+
+          username=$(sfdx force:org:display --json | jq '.result.username' -r)
+          echo "Username = $username"
+          echo "Last part is ${username##*.}"  
+
+          qc=$(cat sfdx-project.json | jq '[.packageAliases | to_entries[] | select(.key | contains("Custom Feature Parameters Application@"))] [-1].value' -r)
+          echo $qc
+          version=$(sfdx force:package:version:list --json | jq ".result [] | select(.SubscriberPackageVersionId==\"$qc\") .Version" -r)
+
+
+          echo $(sfdx force:package:install -p $qc -r --json) > install.txt
+          v=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.status')
+          s=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.result.Status')
+          echo "status=$v"
+          echo "Result.Status=$s"
+          while [[ ($v == 0) && ($s == '"IN_PROGRESS"') ]]
+          do 
+              sleep 10
+              v=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.status')
+              s=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.result.Status')
+              echo "status=$v"
+              echo "Result.Status=$s"
+          done
+          if [[ ($v == 0) && ($s == '"SUCCESS"')]] 
+          then 
+              echo "Installed successfully"
+              echo "::set-output name=success::true"
+              result="Latest Custom Feature Parameters Application Managed Beta version $version with subscriber install id $qc was installed into ${username##*.} sandbox ($username)"
+          
+              namespace=$(cat sfdx-project.json | jq '.namespace' -r)
+
+              echo "QA users : $(cat qa.txt)"
+              ./scripts/assign.sh $namespace QA qa.txt
+              ./scripts/assignCurrentUser.sh $namespace QA
+          fi
+          if [[ $v != 0 ]] 
+          then 
+              echo "Install failed"
+              m=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.message' -r)
+              echo "Error message: $m"
+              echo "::set-output name=success::false"
+              mx=$(echo $m | tr '\n' ' ')
+              result="Install of the Latest Custom Feature Parameters Application Managed Beta version $version with subscriber install id $qc into ${username##*.} sandbox ($username) failed with errors $mx"
+          fi
+
+          echo "::set-output name=result::$result"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notifyInstallQA
+        if: ${{ steps.uninstallQA.outputs.result == 'true' && steps.uninstall.outputs.result == 'true' && steps.install.outputs.success == 'true'}}
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.installQAConsole.outputs.result }}
+          slack-optional-icon_emoji: ":fire:"
+
+      - name: Result from "Send Message"
+        if: ${{ steps.uninstallQA.outputs.result == 'true' && steps.uninstall.outputs.result == 'true' && steps.install.outputs.success == 'true'}}
+        run: echo "The result was ${{ steps.notifyInstallQA.outputs.slack-result }}"

@@ -1,0 +1,1 @@
+sfdx config:set defaultdevhubusername=$1

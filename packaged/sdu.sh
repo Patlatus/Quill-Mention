@@ -1,0 +1,1 @@
+sfdx config:set defaultusername=$1

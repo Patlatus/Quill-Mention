@@ -1,0 +1,107 @@
+name: SFDX Beta Pre-minor version Packaging script
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev-minor
+    paths:
+      - "unpackaged/force-app/**"
+
+jobs:
+  create-package-version:
+    runs-on: ubuntu-latest
+    outputs:
+      pid: ${{ steps.create.outputs.pid }}
+      messageFileName: ${{ steps.create.outputs.messageFileName }}
+      messageFileText: ${{ steps.create.outputs.messageFileText }}
+    steps:
+      - name: Install Salesforce CLI
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz
+          mkdir sfdx-cli
+          tar xJf sfdx-linux-amd64.tar.xz -C sfdx-cli --strip-components 1
+          ./sfdx-cli/install
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+
+      - name: "Authenticate Dev Hub for Packaging"
+        run: |
+          echo ${{secrets.SF_ORG_PACKAGING_DH}} > ./DEVHUB_SFDX_URL.txt
+          sfdx auth:sfdxurl:store -f ./DEVHUB_SFDX_URL.txt -a DH -d
+          rm ./DEVHUB_SFDX_URL.txt
+
+      - name: "Create Package Version"
+        id: "create"
+        run: |
+          cd packaged
+          echo "Going inside packaged folder"
+          rm -rf force-app
+          echo "Deleted force-app folder"
+          cp -r ../unpackaged/force-app .
+
+          chmod +x ./scripts/patchNamespace.sh
+          ./scripts/patchNamespace.sh
+
+          echo $(sfdx force:package:version:create -f ../unpackaged/config/project-scratch-def.json -d force-app -x -w 60 --codecoverage --json) > createPackageVersion.txt
+          
+          echo $(cat createPackageVersion.txt)
+          status=$(cat createPackageVersion.txt | jq '.status' -r )
+          echo $status
+          message=$(cat createPackageVersion.txt | jq '.message' -r )
+          echo $message
+          if [ $status == 0 ]; then
+            echo "Status 0 means OK"
+          else
+            echo "Status 1 means Error: $message"
+            exit 1;
+          fi
+
+          pid=$(cat createPackageVersion.txt | jq '.result.SubscriberPackageVersionId' -r)
+          cd ..
+          echo $pid > ./pid.txt
+          if [ -z "$pid" ]
+          then
+            echo "Package version create failed"
+            exit
+          fi
+          cd packaged
+          echo "Package version created with Id: $pid"
+          echo $(sfdx force:package:version:list --json) > versions.json
+          echo $(cat versions.json)
+          version=$(sfdx force:package:version:list --json | jq ".result [] | select(.SubscriberPackageVersionId==\"$pid\") .Version" -r)
+          echo "::set-output name=pid::$pid"
+          echo "::set-output name=pid::$version"
+          messageFileName=messageBeta_$pid.txt
+          echo "::set-output name=messageFileName::$messageFileName"
+          messageFileText="Hi. Created a new Managed Beta version $version of installable package for Second-Generation-Package-Manager https://login.salesforce.com/packaging/installPackage.apexp?p0=$pid. The link to install in sandboxes is following:  https://test.salesforce.com/packaging/installPackage.apexp?p0=$pid  "
+          echo "::set-output name=messageFileText::$messageFileText"
+
+      - name: "Store pid as artifact"
+        uses: actions/upload-artifact@v2
+        with:
+          name: pid
+          path: ./pid.txt
+
+      - name: "Delete temporary files"
+        run: |
+          rm ./pid.txt
+          rm ./packaged/createPackageVersion.txt
+          rm ./packaged/versions.json
+
+      - name: Commit & Push changes
+        uses: actions-js/push@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{github.ref}}
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.create.outputs.messageFileText}}
+          slack-optional-icon_emoji: ":fire:"
+      - name: Result from "Send Message"
+        run: echo "The result was ${{ steps.notify.outputs.slack-result }}"

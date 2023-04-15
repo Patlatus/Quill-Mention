@@ -1,0 +1,10 @@
+<template>
+    <mention-mention users={users} content-editable onedit={handleEdit}></mention-mention>
+
+    Text : {text} <br/>
+
+    Deltas: {deltas}
+
+    <mention-mention users={userDTOs} content-editable match-function={matchFunction} render-item={renderItem}></mention-mention>
+
+</template>

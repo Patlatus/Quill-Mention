@@ -1,0 +1,300 @@
+name: SFDX Beta version Packaging script
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - "unpackaged/force-app/**"
+
+jobs:
+  create-package-version:
+    runs-on: ubuntu-latest
+    outputs:
+      pid: ${{ steps.create.outputs.pid }}
+      messageFileName: ${{ steps.create.outputs.messageFileName }}
+      messageFileText: ${{ steps.create.outputs.messageFileText }}
+    steps:
+      - name: Install Salesforce CLI
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz
+          mkdir sfdx-cli
+          tar xJf sfdx-linux-amd64.tar.xz -C sfdx-cli --strip-components 1
+          ./sfdx-cli/install
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+
+      - name: "Authenticate Dev Hub for Packaging"
+        run: |
+          echo ${{secrets.SF_ORG_PACKAGING_DH}} > ./DEVHUB_SFDX_URL.txt
+          sfdx auth:sfdxurl:store -f ./DEVHUB_SFDX_URL.txt -a DH -d
+          rm ./DEVHUB_SFDX_URL.txt
+
+      - name: "Create Package Version"
+        id: "create"
+        run: |
+          cd packaged
+          echo "Going inside packaged folder"
+          rm -rf force-app
+          echo "Deleted force-app folder"
+          cp -r ../unpackaged/force-app .
+
+          chmod +x ./scripts/patchNamespace.sh
+          ./scripts/patchNamespace.sh
+
+          curl -sL  -H "Authorization: bearer ${{secrets.REPO_BEARER_TOKEN}}" https://api.github.com/repos/$GITHUB_REPOSITORY/commits?sha=${{github.ref}} | jq -r '[.[] | select(.author.type != "Bot")][0]' > commit.json
+          x=$(cat commit.json | jq '.commit.message' -r)
+          echo "Last commit message: $x"
+
+
+          if [[ $x == *"[VAL]"* ]]; then 
+            echo "Creating new validated version..."
+            echo $(sfdx force:package:version:create -f ../unpackaged/config/project-scratch-def.json -d force-app -x -w 60 --codecoverage --json) > createPackageVersion.txt
+          else
+            echo "Creating new version without validation (skipping validation)"
+            echo $(sfdx force:package:version:create -f ../unpackaged/config/project-scratch-def.json -d force-app -x -w 60 --skipvalidation --json) > createPackageVersion.txt
+          fi
+
+          echo $(cat createPackageVersion.txt)
+          status=$(cat createPackageVersion.txt | jq '.status' -r )
+          echo $status
+          message=$(cat createPackageVersion.txt | jq '.message' -r )
+          echo $message
+          if [ $status == 0 ]; then
+            echo "Status 0 means OK"
+          else
+            echo "Status 1 means Error: $message"
+            exit 1;
+          fi
+
+          pid=$(cat createPackageVersion.txt | jq '.result.SubscriberPackageVersionId' -r)
+          cd ..
+          echo $pid > ./pid.txt
+          if [ -z "$pid" ]
+          then
+            echo "Package version create failed"
+            exit
+          fi
+          cd packaged
+          echo "Package version created with Id: $pid"
+          echo $(sfdx force:package:version:list --json) > versions.json
+          echo $(cat versions.json)
+          version=$(sfdx force:package:version:list --json | jq ".result [] | select(.SubscriberPackageVersionId==\"$pid\") .Version" -r)
+          echo "::set-output name=pid::$pid"
+          echo "::set-output name=pid::$version"
+          messageFileName=messageBeta_$pid.txt
+          echo "::set-output name=messageFileName::$messageFileName"
+          messageFileText="Hi. Created a new Managed Beta version $version of installable package for Second-Generation-Package-Manager https://login.salesforce.com/packaging/installPackage.apexp?p0=$pid . The link to install in sandboxes is following:  https://test.salesforce.com/packaging/installPackage.apexp?p0=$pid "
+          echo "::set-output name=messageFileText::$messageFileText"
+
+      - name: "Store pid as artifact"
+        uses: actions/upload-artifact@v2
+        with:
+          name: pid
+          path: ./pid.txt
+
+      - name: "Delete temporary files"
+        run: |
+          rm ./pid.txt
+          rm ./packaged/createPackageVersion.txt
+          rm ./packaged/versions.json
+          rm ./packaged/commit.json
+
+      - name: Commit & Push changes
+        uses: actions-js/push@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: "${{github.ref}}"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.create.outputs.messageFileText}}
+          slack-optional-icon_emoji: ":fire:"
+      - name: Result from "Send Message"
+        run: echo "The result was ${{ steps.notify.outputs.slack-result }}"
+
+  install-package-version-to-dev:
+    needs: [create-package-version]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Salesforce CLI
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz
+          mkdir sfdx-cli
+          tar xJf sfdx-linux-amd64.tar.xz -C sfdx-cli --strip-components 1
+          ./sfdx-cli/install
+          echo ${{github.ref}}
+          echo ${{github.event.ref}}
+          
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+        with:
+          ref: ${{github.ref}}
+
+      - name: "Authenticate Dev Hub for Packaging"
+        run: |
+          echo ${{secrets.SF_ORG_PACKAGING_DH}} > ./DEVHUB_SFDX_URL.txt
+          sfdx auth:sfdxurl:store -f ./DEVHUB_SFDX_URL.txt -a DH -d
+
+      - name: "Authenticate Dev"
+        run: |
+          echo ${{secrets.SF_ORG_DEV}} > ./dev.txt
+          sfdx auth:sfdxurl:store -f ./dev.txt -a dev
+
+      - name: "Uninstall Previous Package Version from Dev"
+        id: "uninstall"
+        run: |
+          cd packaged
+          sfdx force:config:set defaultusername=dev
+
+          pn=$(cat sfdx-project.json | jq '.packageAliases | keys [0]')
+          previousPackageVersionName=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionName" -r)
+          previousPackageVersionNumber=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionNumber" -r)
+          previousPackageVersion=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionId" -r)
+
+          username=$(sfdx force:org:display --json | jq '.result.username' -r)
+          echo "Username = $username"
+          echo "Last part is ${username##*.}"
+          if [ -z "$previousPackageVersion" ]
+          then
+            previousResult="No previous package version detected, no need to uninstall"
+            echo "::set-output name=result::true"
+          else
+            sandbox=${username##*.}
+            echo "Sandbox : $sandbox"
+            if [[ ("$sandbox" == "qa2") || ("$sandbox" == "d")]] ; then
+              sfdx force:source:deploy -p ../unpackaged/removeReferences --json > removeReferences.txt || true
+              echo "Deploying remove references"
+              deploy=$(cat removeReferences.txt)
+              echo "removeReferences deploy: $deploy"
+              status=$(echo $deploy | jq '.status')
+              echo "status: $status"
+              if [ $status == 0 ]; then
+                echo "Status 0 means OK; deployed remove references folder"
+              else
+                firstError=$(echo $deploy | tr '\r\n' ' '| jq '.result[0].error')
+                echo "Status 1 means error, remove references folder is not deployed. First error: $firstError"
+              fi
+            else
+              echo "Not dev, not deploying remove references"
+            fi
+
+            chmod +x ./scripts/ui.sh
+            ./scripts/ui.sh "$previousPackageVersionName" "$previousPackageVersionNumber" "$previousPackageVersion" "Second-Generation-Package-Manager Package"  $username ${username##*.}
+            result=$(cat result.txt)
+            previousResult=$(cat previousResult.txt)
+            echo "::set-output name=result::$result"
+          fi
+
+          echo $previousResult
+          echo "::set-output name=previous::$previousResult"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: uninstallNofify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.uninstall.outputs.previous }}
+          slack-optional-icon_emoji: ":fire:"
+
+      - name: Result from "Send Message"
+        run: echo "The result was ${{ steps.uninstallNofify.outputs.slack-result }}"
+
+      - name: Sleep for 2 minutes
+        run: sleep 2m
+        shell: bash
+
+      - name: "Install Package Version to Dev"
+        id: "install"
+        if: ${{ steps.uninstall.outputs.result == 'true' }}
+        run: |
+          cd packaged
+          pid=${{ github.event.inputs.pid }}
+          if [ -z "$pid" ]
+          then
+            echo "Parameter pid is missing. Will use the last build version"
+            pn=$(cat sfdx-project.json | jq '.packageAliases | keys [0]' -r)
+            pid=$(cat sfdx-project.json | jq --arg pn "$pn" '[.packageAliases | to_entries[] | select(.key | contains($pn))] [-1].value' -r)
+            echo "Pid found: $pid"
+          fi
+          version=$(sfdx force:package:version:list --json | jq ".result [] | select(.SubscriberPackageVersionId==\"$pid\") .Version" -r)
+
+          sfdx force:config:set defaultusername=dev
+
+          username=$(sfdx force:org:display --json | jq '.result.username' -r)
+          echo "Username = $username"
+          echo "Last part is ${username##*.}"
+
+          echo $(sfdx force:package:install -p $pid -r --json) > install.txt
+          v=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.status')
+          s=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.result.Status')
+          echo "status=$v"
+          echo "Result.Status=$s"
+          while [[ ($v == 0) && ($s == '"IN_PROGRESS"') ]]
+          do 
+              sleep 10
+              v=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.status')
+              s=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.result.Status')
+              echo "status=$v"
+              echo "Result.Status=$s"
+          done
+          if [[ ($v == 0) && ($s == '"SUCCESS"')]] 
+          then 
+              echo "Installed successfully"
+              echo "::set-output name=success::true"
+              result="Latest Managed Beta version $version with subscriber install id $pid was installed into ${username##*.} sandbox ($username)"
+          
+              namespace=$(cat sfdx-project.json | jq '.namespace' -r)
+              
+
+              sandbox=${username##*.}
+              echo "Sandbox : $sandbox"
+              if [ "$sandbox" == "d" ]; then
+                echo "Adding references"
+                sfdx force:source:deploy -p ../unpackaged/addReferencesQA2 --json > addReferences.txt || true
+                deploy=$(cat addReferences.txt)
+                echo "addReferences deploy: $deploy"
+                status=$(echo $deploy | jq '.status')
+                echo "status: $status"
+                if [ $status == 0 ]; then
+                  echo "Status 0 means OK; deployed add references folder"
+                else
+                  firstError=$(echo $deploy | tr '\r\n' ' '| jq '.result[0].error')
+                  echo "Status 1 means error, add references folder is not deployed. First error: $firstError"
+                fi
+              else
+                echo "Not dev, not deploying add references"
+              fi
+          fi
+          if [[ $v != 0 ]] 
+          then 
+              echo "Install failed"
+              m=$(sfdx force:package:install:report -i $(cat install.txt | jq '.result.Id' -r)  --json | jq '.message' -r)
+              echo "Error message: $m"
+              echo "::set-output name=success::false"
+              mx=$(echo $m | tr '\n' ' ')
+              result="Install of the latest Managed Beta version $version with subscriber install id $pid into ${username##*.} sandbox ($username) failed with errors $mx"
+          fi
+          
+          echo "::set-output name=result::$result"
+          sandbox=${username##*.}
+          echo "::set-output name=sandbox::$sandbox"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        if: ${{ steps.uninstall.outputs.result == 'true' }}
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.install.outputs.result }}
+          slack-optional-icon_emoji: ":fire:"
+      - name: Result from "Send Message"
+        if: ${{ steps.uninstall.outputs.result == 'true' }}
+        run: echo "The result was ${{ steps.notify.outputs.slack-result }}"

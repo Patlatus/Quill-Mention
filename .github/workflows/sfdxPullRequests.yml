@@ -1,0 +1,334 @@
+name: Salesforce DX Pull Requests
+
+on:
+  push:
+    paths:
+      - "unpackaged/force-app/**"
+      - ".github/workflows/sfdxPullRequests.yml"
+      - "pmdRules.xml"
+jobs:
+  deployCodeAndRunTestsOnValEnv:
+    runs-on: ubuntu-latest
+    outputs:
+      auth: ${{steps.setauth.outputs.url}}
+      deploy: ${{steps.deploy.outputs.text}}
+      apex-tests: ${{ steps.apex.outputs.text }}
+      coverage: ${{ steps.apex.outputs.coverage }}      
+    name: Deploy Code and Run Apex Tests in VAL Environment
+    steps:
+      - name: Install Salesforce CLI
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz
+          mkdir sfdx-cli
+          tar xJf sfdx-linux-amd64.tar.xz -C sfdx-cli --strip-components 1
+          ./sfdx-cli/install
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+
+      - name: "Authenticate Dev"
+        run: |
+          echo ${{secrets.SF_ORG_DEV}} > ./val.txt
+          sfdx auth:sfdxurl:store -f ./val.txt -a val -s
+
+      - name: "Push source to scratch org"
+        id: "deploy0"
+        run: |
+          cd unpackaged
+          echo "Changed dir"
+          sfdx force:source:deploy -p force-app --json > ../deploy.txt || true
+          echo "File created"
+
+      - name: "Store deploy as artifact"
+        uses: actions/upload-artifact@v2
+        with:
+          name: deploy
+          path: ./deploy.txt
+          
+      - name: "Process push results"
+        id: "deploy"
+        run: |
+          deploy=$(cat ./deploy.txt)
+          cd unpackaged
+          echo "Deploy: $deploy"
+          status=$(echo $deploy | jq '.status')
+          echo "status: $status"
+          head=$(git rev-parse HEAD)
+          echo "head: $head"
+          anchor="https://github.com/$GITHUB_REPOSITORY/commit/$head"
+          echo "anchor: $anchor"
+          runId="https://github.com/$GITHUB_REPOSITORY/actions/runs/${GITHUB_RUN_ID}"
+          echo "runId: $runId"
+
+          if [ $status == 0 ]; then
+            echo "Status 0 means OK"
+            items=$(echo $deploy | jq '.result .deployedSource' | jq length)
+            start="Integrity verification deployment to org executed successfully. $items items were deployed. <$anchor|Link to head commit>"
+          else
+            echo "Status 1 means Error: $message"
+            errors="Errors: "
+            msg=$(echo $deploy | jq '.message' -r)
+            echo "Message .message is $msg"
+            
+            cfType=$(echo $deploy | jq '.result.details.componentFailures | type' -r)
+            echo "componentFailures type is: $cfType"
+            if [ -z "$cfType" ]; then
+              errors="General message: $msg"
+            elif [[ "$cfType" == "array" ]]; then
+              echo "componentFailures type is array"
+              failuresLen=$(echo $deploy | jq '.result.details.componentFailures | length')
+            
+              for ((i=0;i<failuresLen;i++)); do
+                echo "i: $i"
+                echo $(echo $deploy | jq --argjson i $i  '.result.details.componentFailures[$i]')
+                filename=$(echo $deploy | jq --argjson i $i  '.result.details.componentFailures[$i].fileName')
+                fullName=$(echo $deploy | jq --argjson i $i  '.result.details.componentFailures[$i].fullName')
+                problem=$(echo $deploy | jq --argjson i $i  '.result.details.componentFailures[$i].problem')
+                echo "Parsed. Filename: $filename; fullname $fullName, problem $problem"
+                errors="$errors Filename: $filename; fullname $fullName, problem $problem ."
+              done
+            elif [[ "$cfType" == "object" ]]; then
+              echo "componentFailures type is object"
+              echo $(echo $deploy | jq '.result.details.componentFailures')
+              filename=$(echo $deploy | jq '.result.details.componentFailures.fileName')
+              fullName=$(echo $deploy | jq '.result.details.componentFailures.fullName')
+              problem=$(echo $deploy | jq '.result.details.componentFailures.problem')
+              echo "Parsed. Filename: $filename; fullname $fullName, problem $problem"
+              errors="$errors Filename: $filename; fullname $fullName, problem $problem ."
+            else
+              echo "componentFailures type is not determined: $cfType"
+            fi
+            
+            start="Integrity verification deployment to org failed. $errors. <$runId|Refer for the full details here>. <$anchor|Link to head commit>"
+          fi
+
+          echo "::set-output name=text::$start"
+          echo "::set-output name=status::$status"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.deploy.outputs.text}}
+          slack-optional-icon_emoji: ":fire:"
+
+      - name: Result from "Send Message"
+        run: echo "The result was ${{ steps.notify.outputs.slack-result }}"
+
+      - name: "Run Apex tests"
+        run: "echo $(sfdx force:apex:test:run --loglevel=trace -y -c -r json -d ./tests/apex -w 20) > tests.json"
+
+      - name: "Store tests as artifact"
+        uses: actions/upload-artifact@v2
+        with:
+          name: tests
+          path: tests.json
+
+      - uses: actions/download-artifact@v2
+        with:
+          name: tests
+
+      - name: "Process Apex tests results"
+        id: "apex"
+        run: |
+          echo "::set-output name=sferrors::0"
+          message=$(cat tests.json | jq '.message' -r)
+          if [[ null == "$message" ]]
+          then
+            echo "No message"
+          else
+            message="message: $message"
+            echo $message
+            echo "::set-output name=text::$message"
+            exit 0;
+          fi
+
+          outcome=$(cat tests.json | jq '.result .summary .outcome' -r)
+          coverage=$(cat tests.json | jq '.result .summary .testRunCoverage' -r)
+          cov=$(echo $coverage |tr -d '%')
+          echo "::set-output name=coverage::$cov"
+          failures=$(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) | .FullName, .Outcome, .Message' -r)
+
+
+          message="Integrity verification Apex tests run result: $outcome. Total coverage: $coverage."
+          if [ -z "$failures" ]
+          then
+            echo "No Failures"
+          else
+            failures="${failures//'%'/'%25'}"
+            failures="${failures//$'\n'/'%0A'}"
+            failures="${failures//$'\r'/'%0D'}"
+            message="$message Failures: $failures"
+          fi
+
+          echo $(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) .Outcome')
+          echo $(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) .MethodName')
+          echo $(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) .Name')
+          echo $(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) .ApexClass.Name')
+          echo $(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) .FullName')
+          echo $(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) | .FullName, .Outcome, .Message')
+
+          anyCompilationFailures=$(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("CompileFail")) | .FullName, .Outcome, .Message')
+          if [ -z "$anyCompilationFailures" ]
+          then
+            echo "No Compilation Failures"
+          else
+            echo "Complilation Failures: $anyCompilationFailures "
+            exit 0;
+          fi
+
+          internalSFErrors=$(cat tests.json | jq '.result .tests [] | select( .Message != null) | select( .Message | contains("Internal Salesforce Error")) | .ApexClass.Name' -r)
+          if [ -z "$internalSFErrors" ]
+          then
+            echo "No Internal Salesforce Errors"
+
+          else
+            echo "::set-output name=sferrors::1"
+            
+            mkdir log
+            for each in $(sfdx force:apex:log:list --json | jq '.result [].Id' -r ); do
+              log=$(echo $each | sed -e 's/"//g')
+
+              if [ "$log" == "Id" ]; then
+                  echo "ignoring $log"
+                  continue
+              fi
+
+              echo "writing log/$log.debug"
+
+              sfdx force:apex:log:get --logid $log > log/$log.debug
+            done
+            zip -r log.zip log
+
+            uniques=($(for v in "${internalSFErrors[@]}"; do echo "$v";done| sort| uniq| xargs))
+            echo "${uniques[@]}" 
+            echo $(sfdx force:apex:test:run -t "$uniques" -y -c -r json -d ./tests/apex -w 20) > testsRerun.json
+            rerunOutcome=$(cat testsRerun.json | jq '.result .summary .outcome' -r)
+            anyRerunFailures=$(cat testsRerun.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) | .FullName, .Outcome, .Message')
+            message="$message Tests rerun outcome: $rerunOutcome"
+
+            if [ "$rerunOutcome" == "Passed" ]; then
+                echo "Rerun helped to get Internal SF Errors fixed"
+            else
+                echo "Still fails: $anyRerunFailures"
+                message="$message Rerun failures: $anyRerunFailures"
+                echo "::set-output name=text::$message"
+                exit 0;
+            fi
+          fi
+
+          anyFailures=$(cat tests.json | jq '.result .tests [] | select( .Outcome | contains("Fail")) |  select( .Message != null) | select( .Message | contains("Internal Salesforce Error") | not)  | .FullName, .Outcome, .Message')
+          if [ -z "$anyFailures" ]
+          then
+            echo "No Failures"
+            echo "::set-output name=text::$message"
+          else
+            echo "Failures: $anyFailures "
+            message="$message Rerun failures: $anyFailures"
+            echo "::set-output name=text::$message"
+            exit 0;
+          fi
+      - name: "Store tests as artifact"
+        if: ${{ steps.deploy.outputs.status == 0 && steps.apex.outputs.sferrors}}
+        uses: actions/upload-artifact@v2
+        with:
+          name: originalLogs
+          path: log.zip
+      - name: Send message to Slack API
+        if: ${{ steps.deploy.outputs.status == 0 }}
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify2
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{steps.apex.outputs.text}}
+          slack-optional-icon_emoji: ":fire:"
+      - name: Result from "Send Message"
+        if: ${{ steps.deploy.outputs.status == 0 }}
+        run: echo "${{ steps.notify2.outputs.slack-result }}" > slackResult.txt
+
+  fail-if-unit-tests-fail:
+    runs-on: ubuntu-latest
+    needs: deployCodeAndRunTestsOnValEnv
+    name: Fail workflow if unit tests fail
+    steps:
+      - name: Verify
+        run: |
+          deploy="${{needs.deployCodeAndRunTestsOnValEnv.outputs.deploy}}"
+
+          if [[ "$deploy" ==  "1" ]]; then
+            echo "Deployment failed. Apex tests were not run. Please fix compilation deployment failures first to run unit tests"
+            exit 1;
+          fi
+
+          apexTests="${{needs.deployCodeAndRunTestsOnValEnv.outputs.apex-tests}}"
+          echo "$apexTests"
+          if [[ "$apexTests" == *"failures"* || "$apexTests" == *"Failures"* ]]; then
+            echo "failures present in apexTests results"
+            exit 1;
+          fi
+          coverage="${{needs.deployCodeAndRunTestsOnValEnv.outputs.coverage}}"
+          echo "$coverage %"
+          if [[ $coverage -lt 75 ]]; then
+            echo "Coverage is less then 75% "
+            exit 1;
+          fi
+
+  pmd:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+      
+      - name: "Install PMD"
+        run: |
+          if [ ! -d pmd-bin-6.48.0 ]; then
+            curl -L "https://github.com/pmd/pmd/releases/download/pmd_releases/6.48.0/pmd-bin-6.48.0.zip" -o pmd-bin-6.48.0.zip
+            unzip pmd-bin-6.48.0.zip
+            rm pmd-bin-6.48.0.zip
+          fi
+
+      - name: Run Static Analysis
+        run: |
+          pmd-bin-6.48.0/bin/run.sh pmd -d ./unpackaged/force-app/ -R ./pmdRules.xml -f text -l apex \
+          -r static-analysis.txt --no-cache || true
+
+      - name: "Show results"
+        id: "result"
+        run: |
+          echo $(cat static-analysis.txt)
+          if [[ -s static-analysis.txt ]]; then
+            result=$(cat static-analysis.txt)
+            result="${result//'%'/'%25'}"
+            result="${result//$'\n'/'%0A'}"
+            result="${result//$'\r'/'%0D'}"
+          else
+            result="No code style violations found by current PMD configuration and suppression rules"
+          fi
+          echo "::set-output name=text::$result"
+
+      - name: "Store static-analysis as artifact"
+        uses: actions/upload-artifact@v2
+        with:
+          name: static-analysis.txt
+          path: ./static-analysis.txt
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.result.outputs.text}}
+          slack-optional-icon_emoji: ":fire:"
+
+      - name: Verify
+        run: |
+          if [[ -s static-analysis.txt ]]; then
+            echo "PMD has found some code style violations"
+            exit 1;
+          else
+            echo "No code style violations found"
+          fi

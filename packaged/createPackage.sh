@@ -1,0 +1,1 @@
+sfdx force:package:create -n "$1" -t Managed -r "force-app" -o $2

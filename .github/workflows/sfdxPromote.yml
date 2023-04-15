@@ -1,0 +1,230 @@
+name: SFDX Promote Version Packaging script
+
+on:
+  workflow_dispatch:
+
+jobs:
+  promote-package-version:
+    runs-on: ubuntu-latest
+    outputs:
+      pid: ${{ steps.create.outputs.pid }}
+      messageFileName: ${{ steps.create.outputs.messageFileName }}
+      messageFileText: ${{ steps.create.outputs.messageFileText }}
+    steps:
+      - name: Install Salesforce CLI
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz
+          mkdir sfdx-cli
+          tar xJf sfdx-linux-amd64.tar.xz -C sfdx-cli --strip-components 1
+          ./sfdx-cli/install
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+        with:
+          ref: ${{github.ref}}
+
+      - name: "Authenticate Dev Hub for Packaging"
+        run: |
+          echo ${{secrets.SF_ORG_PACKAGING_DH}} > ./DEVHUB_SFDX_URL.txt
+          sfdx auth:sfdxurl:store -f ./DEVHUB_SFDX_URL.txt -a DH -d
+          rm ./DEVHUB_SFDX_URL.txt
+
+      - name: "Promote Last Package Version"
+        id: "promote"
+        run: |
+          cd packaged
+          echo "Going inside packaged folder"
+           
+          pn=$(cat sfdx-project.json | jq '.packageAliases | keys [0]' -r)
+          pid=$(cat sfdx-project.json | jq --arg pn "$pn" '[.packageAliases | to_entries[] | select(.key | contains($pn))] [-1].value' -r)
+
+          echo $pid > ../pid.txt
+          if [ -z "$pid" ]
+          then
+            echo "No Package version found"
+            exit 1
+          fi
+          echo "Package version created with Id: $pid"
+          sfdx force:package:version:promote -n -p $pid
+          echo "Package version promoted with Id: $pid"
+
+          echo $(sfdx force:package:version:list --json) > versions.json
+          echo $(cat versions.json)
+
+          version=$(sfdx force:package:version:list --json | jq ".result [] | select(.SubscriberPackageVersionId==\"$pid\") .Version" -r)
+          echo "::set-output name=pid::$pid"
+          echo "::set-output name=pid::$version"
+          messageFileName=messageBeta_$pid.txt
+          echo "::set-output name=messageFileName::$messageFileName"
+          messageFileText="Hi. Promoted last package version $version of installable package for Second-Generation-Package-Manager https://login.salesforce.com/packaging/installPackage.apexp?p0=$pid. The link to install in sandboxes is following:  https://test.salesforce.com/packaging/installPackage.apexp?p0=$pid  "
+          echo "::set-output name=messageFileText::$messageFileText"
+
+          ((a[2]=${a[2]}+1))
+          echo "Incrementing patch version: ${a[@]}"
+          x=$(printf ".%s" "${a[@]}")
+
+          OUT=${x:1}
+          echo "Auto increment patch version after successful minor release; version number is: $OUT"
+          version=${x:1:${#x}-6}
+          echo "Auto increment patch version after successful minor release; version name: $version"
+
+          contents=$(jq --arg a "${OUT}" '.packageDirectories[0].versionNumber = $a' sfdx-project.json)
+          echo "Auto increment patch version after successful minor release; Update sfdx-project.json packageDirectories[0].versionNumber with the version number: $contents"
+          echo "${contents}" > sfdx-project.json
+
+          contents=$(jq --arg a "${version}" '.packageDirectories[0].versionName = $a' sfdx-project.json)
+          echo "Auto increment patch version after successful minor release; Update sfdx-project.json packageDirectories[0].versionNumber with the version name: $contents"
+          echo "${contents}" > sfdx-project.json
+
+      - name: "Store pid as artifact"
+        uses: actions/upload-artifact@v2
+        with:
+          name: pid
+          path: ./pid.txt
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        if: always()
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{steps.promote.outputs.messageFileText}}
+          slack-optional-icon_emoji: ":fire:"
+
+      - name: Result from "Send Message"
+        if: always()
+        run: echo "The result was ${{ steps.notify.outputs.slack-result }}"
+
+      - name: "Delete temporary files"
+        run: |
+          rm ./pid.txt
+          rm ./packaged/versions.json
+
+      - name: Commit & Push changes to the current branch?
+        uses: actions-js/push@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{github.ref}}
+
+  install-package-version-to-devhub:
+    runs-on: ubuntu-latest
+    needs: promote-package-version
+    steps:
+      - name: Install Salesforce CLI
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz
+          mkdir sfdx-cli
+          tar xJf sfdx-linux-amd64.tar.xz -C sfdx-cli --strip-components 1
+          ./sfdx-cli/install
+
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+
+      - uses: actions/download-artifact@v2
+        with:
+          name: pid
+
+      - name: "Authenticate Dev Hub for Packaging"
+        run: |
+          echo ${{secrets.SF_ORG_PACKAGING_DH}} > ./DEVHUB_SFDX_URL.txt
+          sfdx auth:sfdxurl:store -f ./DEVHUB_SFDX_URL.txt -a DH -d
+          rm ./DEVHUB_SFDX_URL.txt
+
+      - name: "Install Package Version to DevHub"
+        id: "install"
+        run: |
+          pid=$(cat ./pid.txt)
+          cd packaged
+          version=$(sfdx force:package:version:list --json | jq ".result [] | select(.SubscriberPackageVersionId==\"$pid\") .Version" -r)
+
+          sfdx force:config:set defaultusername=DH
+
+          pn=$(cat sfdx-project.json | jq '.packageAliases | keys [0]')
+          previousPackageVersionName=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionName" -r)
+          previousPackageVersionNumber=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionNumber" -r)
+          previousPackageVersion=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionId" -r)
+          if [ -z "$previousPackageVersion" ]
+          then
+            previousResult="A fresh install: no previous package version detected"
+          else
+            previousResult="Previous Package version $previousPackageVersionNumber ($previousPackageVersionName) with subscriber install id $previousPackageVersion was upgraded"
+          fi
+          echo $previousResult
+          echo "::set-output name=previous::$previousResult"
+
+          sfdx force:package:install -p $pid -r -w 600
+          namespace=$(cat sfdx-project.json | jq '.namespace' -r)
+
+          result=$(echo "Latest Managed Released Patch version $version with subscriber install id $pid was installed into DevHub. $previousResult")
+          echo "::set-output name=result::$result"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.install.outputs.result }}
+          slack-optional-icon_emoji: ":fire:"
+      - name: Result from "Send Message"
+        run: echo "The result was ${{ steps.notify.outputs.slack-result }}"
+
+  install-package-version-to-reg:
+    runs-on: ubuntu-latest
+    needs: promote-package-version
+    steps:
+      - name: Install Salesforce CLI
+        run: |
+          wget https://developer.salesforce.com/media/salesforce-cli/sfdx-linux-amd64.tar.xz
+          mkdir sfdx-cli
+          tar xJf sfdx-linux-amd64.tar.xz -C sfdx-cli --strip-components 1
+          ./sfdx-cli/install
+      - name: "Checkout source code"
+        uses: actions/checkout@v2
+      - uses: actions/download-artifact@v2
+        with:
+          name: pid
+      - name: "Authenticate Dev Hub for Packaging"
+        run: |
+          echo ${{secrets.SF_ORG_PACKAGING_DH}} > ./DEVHUB_SFDX_URL.txt
+          sfdx auth:sfdxurl:store -f ./DEVHUB_SFDX_URL.txt -a DH -d
+
+      - name: "Authenticate Reg"
+        run: |
+          echo ${{secrets.SF_ORG_REG}} > ./reg.txt
+          sfdx auth:sfdxurl:store -f ./reg.txt -a reg
+      - name: "Install Package Version to Reg"
+        id: "install"
+        run: |
+          pid=$(cat ./pid.txt)
+          cd packaged
+          version=$(sfdx force:package:version:list --json | jq ".result [] | select(.SubscriberPackageVersionId==\"$pid\") .Version" -r)
+
+          sfdx force:config:set defaultusername=reg
+          pn=$(cat sfdx-project.json | jq '.packageAliases | keys [0]')
+          previousPackageVersionName=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionName" -r)
+          previousPackageVersionNumber=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionNumber" -r)
+          previousPackageVersion=$(sfdx force:package:installed:list --json | jq ".result [] | select(.SubscriberPackageName==$pn) .SubscriberPackageVersionId" -r)
+          if [ -z "$previousPackageVersion" ]
+          then
+            previousResult="A fresh install: no previous package version detected"
+          else
+            previousResult="Previous Package version $previousPackageVersionNumber ($previousPackageVersionName) with subscriber install id $previousPackageVersion was upgraded"
+          fi
+          echo $previousResult
+          echo "::set-output name=previous::$previousResult"
+
+          sfdx force:package:install -p $pid -r -w 600
+          result=$(echo "Latest Managed Released Patch version $version with subscriber install id $pid was installed into reg sandbox (bd@con.t.reg). $previousResult")
+          echo "::set-output name=result::$result"
+
+      - name: Send message to Slack API
+        uses: archive/github-actions-slack@v1.0.3
+        id: notify
+        with:
+          slack-bot-user-oauth-access-token: ${{secrets.SLACK_BOT_OAUTH}}
+          slack-channel: ${{secrets.SLACK_CHANNEL}}
+          slack-text: ${{ steps.install.outputs.result }}
+          slack-optional-icon_emoji: ":fire:"
+      - name: Result from "Send Message"
+        run: echo "The result was ${{ steps.notify.outputs.slack-result }}"
