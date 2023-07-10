@@ -10,7 +10,7 @@
 			"options": { "parser": "html" }
 		}
 	],
-	"useTabs": true,
+	"useTabs": false,
 	"arrowParens": "avoid",
 	"printWidth": 120,
 	"tabWidth": 4
