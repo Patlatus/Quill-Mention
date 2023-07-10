@@ -1,5 +1,5 @@
-import { LightningElement, track } from "lwc";
-import getUsers from "@salesforce/apex/UsageExampleCont.users";
+import { LightningElement, track } from 'lwc';
+import getUsers from '@salesforce/apex/UsageExampleCont.users';
 export default class UsageExample extends LightningElement {
     @track users;
     @track userDTOs;
@@ -10,8 +10,8 @@ export default class UsageExample extends LightningElement {
             this.userDTOs = this.users.map(x => {
                 let y = { ...x };
                 y.disabled = !x.IsActive;
-                y.link = "/" + x.Id;
-                y.target = "_blank";
+                y.link = '/' + x.Id;
+                y.target = '_blank';
                 return y;
             });
         });
@@ -29,5 +29,5 @@ export default class UsageExample extends LightningElement {
     matchFunction = searchTerm => x =>
         x.LastName.toLowerCase().includes(searchTerm.toLowerCase()) ||
         x.FirstName.toLowerCase().includes(searchTerm.toLowerCase());
-    renderItem = item => `${item.LastName}` + (item.FirstName ? ` ${item.FirstName}` : "");
+    renderItem = item => `${item.LastName}` + (item.FirstName ? ` ${item.FirstName}` : '');
 }
