@@ -12,7 +12,7 @@ export default class Mention extends LightningElement {
     @track filtered = [];
     firstRender = false;
 
-    _contentEditable = false;
+    _contentEditable = true;
 
     @api
     get contentEditable() {
@@ -101,8 +101,8 @@ export default class Mention extends LightningElement {
         if (!this.firstRender) {
             this.firstRender = true;
             Promise.all([
-                loadScript(this, QuillStaticResource + '/quill.js'),
-                loadStyle(this, QuillStaticResource + '/quill.snow.css')
+                loadScript(this, QuillStaticResource + '/Quill/quill.js'),
+                loadStyle(this, QuillStaticResource + '/Quill/quill.snow.css')
             ])
                 .then(() => {
                     this.initQuill(this.template.querySelector('div.mention-container'), this);
