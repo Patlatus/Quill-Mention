@@ -1,17 +1,18 @@
-import { LightningElement, api, track } from "lwc";
+import { LightningElement, api, track } from 'lwc';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
-import QuillStaticResource from "@salesforce/resourceUrl/Quill";
+import QuillStaticResource from '@salesforce/resourceUrl/Quill';
 
-import { loadScript, loadStyle } from "lightning/platformResourceLoader";
+import { loadScript, loadStyle } from 'lightning/platformResourceLoader';
 
 export default class Mention extends LightningElement {
-    @api users = [];
+    @api atValues = [];
+    @api hashValues = [];
     @api matchFunction = searchTerm => x => x.Name.toLowerCase().includes(searchTerm.toLowerCase());
-    @api renderItem = item => `${item.Name}`
+    @api renderItem = item => `${item.Name}`;
     @track filtered = [];
     firstRender = false;
 
-    _contentEditable = false;
+    _contentEditable = true;
 
     @api
     get contentEditable() {
@@ -19,13 +20,13 @@ export default class Mention extends LightningElement {
     }
 
     set contentEditable(value) {
-       this._contentEditable = value;
-       this.quill?.root.setAttribute("contenteditable", value);
+        this._contentEditable = value;
+        this.quill?.root.setAttribute('contenteditable', value);
     }
 
     @api enableEdit() {
-        _contentEditable = true;
-        this.quill.root.setAttribute("contenteditable", true);
+        this._contentEditable = true;
+        this.quill.root.setAttribute('contenteditable', true);
     }
 
     reduce(errors) {
@@ -33,7 +34,7 @@ export default class Mention extends LightningElement {
             errors = [errors];
         }
         let err = errors[0];
-        if (err.messages  && Array.isArray(err.messages)) {
+        if (err.messages && Array.isArray(err.messages)) {
             errors = errors.concat(err.messages);
         }
         if (err.body && Array.isArray(err.body.pageErrors)) {
@@ -43,42 +44,41 @@ export default class Mention extends LightningElement {
             errors = errors.concat(err.body.duplicateResults);
         }
         if (err.body && err.body.fieldErrors) {
-            for (const x in err.body.fieldErrors ) {
+            for (const x in err.body.fieldErrors) {
                 if (Object.prototype.hasOwnProperty.call(err.body.fieldErrors, x)) {
                     errors = errors.concat(err.body.fieldErrors[x]);
                 }
             }
         }
-    
+
         return (
             errors
                 // Remove null/undefined items
-                .filter((error) => !!error)
+                .filter(error => !!error)
                 // Extract an error message
-                .map((error) => {
+                .map(error => {
                     // UI API read errors
                     if (Array.isArray(error.body)) {
-                        return error.body.map((e) => e.message);
+                        return error.body.map(e => e.message);
                     }
                     // UI API DML, Apex and network errors
                     else if (error.body && typeof error.body.message === 'string') {
                         return error.body.message;
-                    }
-                    else if (typeof error.problem === 'string') {
+                    } else if (typeof error.problem === 'string') {
                         return error.problem;
                     }
                     // JS errors
                     else if (typeof error.message === 'string') {
                         return error.message;
                     }
-                    
+
                     // Unknown error shape so try HTTP status text
                     return error.statusText;
                 })
                 // Flatten
                 .reduce((prev, curr) => prev.concat(curr), [])
                 // Remove empty strings
-                .filter((message) => !!message)
+                .filter(message => !!message)
                 .join('. ')
         );
     }
@@ -87,13 +87,13 @@ export default class Mention extends LightningElement {
         if (typeof ShowToastEvent !== 'undefined') {
             this.dispatchEvent(
                 new ShowToastEvent({
-                    'variant': 'error',
-                    "title": "Error",
-                    "message": this.reduce(error)
+                    variant: 'error',
+                    title: 'Error',
+                    message: this.reduce(error)
                 })
             );
         } else {
-            alert(this.reduce(error));
+            console.log(this.reduce(error));
         }
     }
 
@@ -101,18 +101,17 @@ export default class Mention extends LightningElement {
         if (!this.firstRender) {
             this.firstRender = true;
             Promise.all([
-                loadScript(this, QuillStaticResource + "/quill.js"),
-                loadStyle(this, QuillStaticResource + "/quill.snow.css"),
+                loadScript(this, QuillStaticResource + '/Quill/quill.js'),
+                loadStyle(this, QuillStaticResource + '/Quill/quill.snow.css')
             ])
                 .then(() => {
-                    this.initQuill(
-                        this.template.querySelector("div.mention-container"),
-                        this
-                    );
+                    this.initQuill(this.template.querySelector('div.mention-container'), this);
 
-                    this.quill.root.setAttribute("contenteditable", this._contentEditable);
+                    this.quill.root.setAttribute('contenteditable', this._contentEditable);
+
+                    this.quill.setText(this._text);
                 })
-                .catch((error) => {
+                .catch(error => {
                     this.displayError(error);
                 });
         }
@@ -124,17 +123,26 @@ export default class Mention extends LightningElement {
             ENTER: 13,
             ESCAPE: 27,
             UP: 38,
-            DOWN: 40,
+            DOWN: 40
         };
-        const Embed = Quill.import("blots/embed");
+        const Embed = Quill.import('blots/embed');
 
         class MentionBlot extends Embed {
+            // rg
+            hoverHandler;
+
+            constructor(scroll, node) {
+                super(scroll, node);
+                this.clickHandler = null;
+                this.hoverHandler = null;
+                this.mounted = false;
+            }
+            // rg end
+
             static create(data) {
                 const node = super.create();
-                node.setAttribute("contenteditable", false);
-                node.className = "ql-chatter-mention quill_widget_element";
-                const denotationChar = document.createElement("span");
-                denotationChar.className = "ql-mention-denotation-char";
+                const denotationChar = document.createElement('span');
+                denotationChar.className = 'ql-mention-denotation-char';
                 denotationChar.innerHTML = data.denotationChar;
                 node.appendChild(denotationChar);
                 node.innerHTML += data.value;
@@ -143,7 +151,7 @@ export default class Mention extends LightningElement {
 
             static setDataValues(element, data) {
                 const domNode = element;
-                Object.keys(data).forEach((key) => {
+                Object.keys(data).forEach(key => {
                     domNode.dataset[key] = data[key];
                 });
                 return domNode;
@@ -157,25 +165,51 @@ export default class Mention extends LightningElement {
                 super.attach();
                 if (!this.mounted) {
                     this.mounted = true;
-                    this.scroll.domNode.dispatchEvent(
-                        new CustomEvent("blot-mounted", {
-                            bubbles: true,
-                            detail: this,
-                        })
-                    );
+                    this.clickHandler = this.getClickHandler();
+                    this.hoverHandler = this.getHoverHandler();
+                    this.domNode.addEventListener('click', this.clickHandler, false);
+                    this.domNode.addEventListener('mouseenter', this.hoverHandler, false);
                 }
             }
 
             detach() {
-                this.mounted = false;
-                this.scroll.domNode.dispatchEvent(
-                    new CustomEvent("blot-unmounted", {
-                        bubbles: true,
-                        detail: this,
-                    })
-                );
                 super.detach();
+                this.mounted = false;
+                if (this.clickHandler) {
+                    this.domNode.removeEventListener('click', this.clickHandler);
+                    this.clickHandler = null;
+                }
             }
+
+            // rg
+            getClickHandler() {
+                return e => {
+                    const event = this.buildEvent('mention-clicked', e);
+                    window.dispatchEvent(event);
+                    e.preventDefault();
+                };
+            }
+
+            getHoverHandler() {
+                return e => {
+                    const event = this.buildEvent('mention-hovered', e);
+                    window.dispatchEvent(event);
+                    e.preventDefault();
+                };
+            }
+
+            buildEvent(name, e) {
+                const event = new CustomEvent(name, {
+                    bubbles: true,
+                    cancelable: true
+                });
+                event.value = Object.assign({}, this.domNode.dataset);
+                event.event = e;
+                return event;
+            }
+
+            hoverHandler;
+            // rg ends
 
             /**
              * Redefine the `update` method to handle the `childList` case.
@@ -188,17 +222,15 @@ export default class Mention extends LightningElement {
                 // see `update` implementation on:
                 // https://github.com/quilljs/quill/blob/master/blots/embed.js
 
-                mutations.forEach((mutation) => {
-                    if (mutation.type !== "childList") return;
+                mutations.forEach(mutation => {
+                    if (mutation.type !== 'childList') return;
                     if (mutation.removedNodes.length === 0) return;
 
                     // eslint-disable-next-line @lwc/lwc/no-async-operation
                     setTimeout(() => this._remove(), 0);
                 });
 
-                const unhandledMutations = mutations.filter(
-                    (m) => m.type !== "childList"
-                );
+                const unhandledMutations = mutations.filter(m => m.type !== 'childList');
                 super.update(unhandledMutations, context);
             }
 
@@ -214,20 +246,13 @@ export default class Mention extends LightningElement {
 
                 // schedule cursor positioning after quill is done with whatever has scheduled
                 // eslint-disable-next-line @lwc/lwc/no-async-operation
-                setTimeout(
-                    () =>
-                        this.quill.setSelection(
-                            cursorPosition,
-                            Quill.sources.API
-                        ),
-                    0
-                );
+                setTimeout(() => this.quill.setSelection(cursorPosition, Quill.sources.API), 0);
             }
         }
 
-        MentionBlot.blotName = "mention";
-        MentionBlot.tagName = "span";
-        MentionBlot.className = "mention";
+        MentionBlot.blotName = 'mention';
+        MentionBlot.tagName = 'span';
+        MentionBlot.className = 'mention';
         Quill.register(MentionBlot);
 
         this.isOpen = false;
@@ -243,8 +268,16 @@ export default class Mention extends LightningElement {
         this.existingSourceExecutionToken = null;
 
         this.options = {
-            source: function (searchTerm, renderList) {
-                main.filtered = main.users.filter(main.matchFunction(searchTerm));
+            source: function (searchTerm, renderList, mentionChar) {
+                let values;
+
+                if (mentionChar === '@') {
+                    values = main.atValues;
+                } else {
+                    values = main.hashValues;
+                }
+
+                main.filtered = values.filter(main.matchFunction(searchTerm));
                 renderList(main.filtered, searchTerm);
             },
             renderItem(item) {
@@ -256,7 +289,7 @@ export default class Mention extends LightningElement {
             onSelect(item, insertItem) {
                 insertItem(item);
             },
-            mentionDenotationChars: ["@"],
+            mentionDenotationChars: ['@', '#'],
             showDenotationChar: true,
             allowedChars: /^[a-zA-Z0-9_]*$/,
             minChars: 0,
@@ -265,18 +298,11 @@ export default class Mention extends LightningElement {
             offsetLeft: 0,
             isolateCharacter: false,
             fixMentionsToQuill: false,
-            positioningStrategy: "normal",
-            defaultMenuOrientation: "bottom",
-            blotName: "mention",
-            dataAttributes: [
-                "Id",
-                "value",
-                "denotationChar",
-                "link",
-                "target",
-                "disabled",
-            ],
-            linkTarget: "_blank",
+            positioningStrategy: 'normal',
+            defaultMenuOrientation: 'bottom',
+            blotName: 'mention',
+            dataAttributes: ['Id', 'value', 'denotationChar', 'link', 'target', 'disabled'],
+            linkTarget: '_blank',
             onOpen() {
                 return true;
             },
@@ -284,66 +310,51 @@ export default class Mention extends LightningElement {
                 return true;
             },
             // Style options
-            listItemClass: "ql-mention-list-item",
-            mentionContainerClass: "ql-mention-list-container",
-            mentionListClass: "ql-mention-list",
+            listItemClass: 'ql-mention-list-item',
+            mentionContainerClass: 'ql-mention-list-container',
+            mentionListClass: 'ql-mention-list',
             spaceAfterInsert: true,
-            selectKeys: [Keys.ENTER],
+            selectKeys: [Keys.ENTER]
         };
 
         /* combination of styles .forceChatterAutocomplete.defaultFlavor .uiAutocomplete .uiAutocompleteList will give z-index: 10 */
         //create mention container
-        this.mentionContainer = document.createElement("div");
+        this.mentionContainer = document.createElement('div');
         this.mentionContainer.className =
-            "defaultFlavor forceChatterAutocomplete forceChatterMentionAutocomplete " +
-            (this.options.mentionContainerClass
-                ? this.options.mentionContainerClass
-                : "");
+            'defaultFlavor forceChatterAutocomplete forceChatterMentionAutocomplete ' +
+            (this.options.mentionContainerClass ? this.options.mentionContainerClass : '');
 
-        this.mentionContainer1 = document.createElement("div");
-        this.mentionContainer1.className =
-            "uiInput uiAutocomplete uiInput--default uiInput--lookup";
+        this.mentionContainer1 = document.createElement('div');
+        this.mentionContainer1.className = 'uiInput uiAutocomplete uiInput--default uiInput--lookup';
 
         this.mentionContainer.appendChild(this.mentionContainer1);
 
-        this.mentionContainer2 = document.createElement("div");
-        this.mentionContainer2.className =
-            "cuf-autocompleteClass lookup__menu uiAbstractList uiAutocompleteList";
+        this.mentionContainer2 = document.createElement('div');
+        this.mentionContainer2.className = 'cuf-autocompleteClass lookup__menu uiAbstractList uiAutocompleteList';
 
         this.mentionContainer1.appendChild(this.mentionContainer2);
 
-        this.mentionContainer3 = document.createElement("div");
-        this.mentionContainer3.className = this.options.mentionContainerClass
-            ? this.options.mentionContainerClass
-            : "";
-        this.mentionContainer.style.cssText =
-            "display: none; position: absolute;";
-        this.mentionContainer.onmousemove = this.onContainerMouseMove.bind(
-            this
-        );
+        this.mentionContainer3 = document.createElement('div');
+        this.mentionContainer3.className = this.options.mentionContainerClass ? this.options.mentionContainerClass : '';
+        this.mentionContainer.style.cssText = 'display: none; position: absolute;';
+        this.mentionContainer.onmousemove = this.onContainerMouseMove.bind(this);
 
         if (this.options.fixMentionsToQuill) {
-            this.mentionContainer.style.width = "auto";
+            this.mentionContainer.style.width = 'auto';
         }
         this.mentionContainer2.appendChild(this.mentionContainer3);
 
-        this.mentionList = document.createElement("ul");
+        this.mentionList = document.createElement('ul');
 
-        this.mentionList.role = "presentation";
+        this.mentionList.role = 'presentation';
         this.mentionList.className =
-            "lookup__list  visible " +
-            (this.options.mentionListClass
-                ? this.options.mentionListClass
-                : "");
+            'lookup__list  visible ' + (this.options.mentionListClass ? this.options.mentionListClass : '');
         this.mentionContainer3.appendChild(this.mentionList);
 
         let quill = new Quill(nodeElement, this.options);
         /* Important: Lightning Experience fixes for Quill library */
         quill.selection.hasFocus = function () {
-            return (
-                this.root._template &&
-                this.root._template.activeElement === this.root
-            );
+            return this.root._template && this.root._template.activeElement === this.root;
         };
         let _slicedToArray = (function () {
             function sliceIterator(arr, i) {
@@ -352,11 +363,7 @@ export default class Mention extends LightningElement {
                 var _d = false;
                 var _e;
                 try {
-                    for (
-                        let _i = arr[Symbol.iterator](), _s;
-                        !(_n = (_s = _i.next()).done);
-                        _n = true
-                    ) {
+                    for (let _i = arr[Symbol.iterator](), _s; !(_n = (_s = _i.next()).done); _n = true) {
                         _arr.push(_s.value);
                         if (i && _arr.length === i) break;
                     }
@@ -380,18 +387,13 @@ export default class Mention extends LightningElement {
                     return sliceIterator(arr, i);
                     // eslint-disable-next-line no-else-return
                 } else {
-                    throw new TypeError(
-                        "Invalid attempt to destructure non-iterable instance"
-                    );
+                    throw new TypeError('Invalid attempt to destructure non-iterable instance');
                 }
             };
         })();
 
         quill.selection.getBounds = function (index) {
-            var length =
-                arguments.length > 1 && arguments[1] !== undefined
-                    ? arguments[1]
-                    : 0;
+            var length = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : 0;
 
             var scrollLength = this.scroll.length();
             index = Math.min(index, scrollLength - 1);
@@ -437,22 +439,22 @@ export default class Mention extends LightningElement {
                 return range.getBoundingClientRect();
                 // eslint-disable-next-line no-else-return
             } else {
-                let side = "left";
+                let side = 'left';
                 // eslint-disable-next-line no-void
                 let rect = void 0;
-                if (node instanceof Text || node.tagName === "#text") {
+                if (node instanceof Text || node.tagName === '#text') {
                     if (offset < node.data.length) {
                         range.setStart(node, offset);
                         range.setEnd(node, offset + 1);
                     } else {
                         range.setStart(node, offset - 1);
                         range.setEnd(node, offset);
-                        side = "right";
+                        side = 'right';
                     }
                     rect = range.getBoundingClientRect();
                 } else {
                     rect = leaf.domNode.getBoundingClientRect();
-                    if (offset > 0) side = "right";
+                    if (offset > 0) side = 'right';
                 }
                 return {
                     bottom: rect.top + rect.height,
@@ -460,21 +462,21 @@ export default class Mention extends LightningElement {
                     left: rect[side],
                     right: rect[side],
                     top: rect.top,
-                    width: 0,
+                    width: 0
                 };
             }
         };
 
         this.quill = quill;
-        quill.root.classList.add("slds-rich-text-area__content");
+        quill.root.classList.add('slds-rich-text-area__content');
         quill.root._template = this.template;
 
-        quill.on("text-change", this.onTextChange.bind(this));
-        quill.on("selection-change", this.onSelectionChange.bind(this));
+        quill.on('text-change', this.onTextChange.bind(this));
+        quill.on('selection-change', this.onSelectionChange.bind(this));
 
         //Pasting doesn't fire selection-change after the pasted text is
         //inserted, so here we manually trigger one
-        quill.container.addEventListener("paste", () => {
+        quill.container.addEventListener('paste', () => {
             // eslint-disable-next-line @lwc/lwc/no-async-operation
             setTimeout(() => {
                 const range = quill.getSelection();
@@ -484,56 +486,47 @@ export default class Mention extends LightningElement {
 
         quill.keyboard.addBinding(
             {
-                key: Keys.TAB,
+                key: Keys.TAB
             },
             this.selectHandler.bind(this)
         );
-        quill.keyboard.bindings[Keys.TAB].unshift(
-            quill.keyboard.bindings[Keys.TAB].pop()
-        );
+        quill.keyboard.bindings[Keys.TAB].unshift(quill.keyboard.bindings[Keys.TAB].pop());
 
         quill.keyboard.addBinding(
             {
-                key: Keys.ENTER,
+                key: Keys.ENTER
             },
             this.enterHandler.bind(this)
         );
-        quill.keyboard.bindings[Keys.ENTER].unshift(
-            quill.keyboard.bindings[Keys.ENTER].pop()
-        );
-
+        quill.keyboard.bindings[Keys.ENTER].unshift(quill.keyboard.bindings[Keys.ENTER].pop());
 
         for (let selectKey of this.options.selectKeys) {
             quill.keyboard.addBinding(
                 {
-                    key: selectKey,
+                    key: selectKey
                 },
                 this.selectHandler.bind(this)
             );
         }
-        quill.keyboard.bindings[Keys.ENTER].unshift(
-            quill.keyboard.bindings[Keys.ENTER].pop()
-        );
-
-        
+        quill.keyboard.bindings[Keys.ENTER].unshift(quill.keyboard.bindings[Keys.ENTER].pop());
 
         quill.keyboard.addBinding(
             {
-                key: Keys.ESCAPE,
+                key: Keys.ESCAPE
             },
             this.escapeHandler.bind(this)
         );
 
         quill.keyboard.addBinding(
             {
-                key: Keys.UP,
+                key: Keys.UP
             },
             this.upHandler.bind(this)
         );
 
         quill.keyboard.addBinding(
             {
-                key: Keys.DOWN,
+                key: Keys.DOWN
             },
             this.downHandler.bind(this)
         );
@@ -542,7 +535,7 @@ export default class Mention extends LightningElement {
     // quill.mention.utils
     attachDataValues(element, data, dataAttributes) {
         const mention = element;
-        Object.keys(data).forEach((key) => {
+        Object.keys(data).forEach(key => {
             if (dataAttributes.indexOf(key) > -1) {
                 mention.dataset[key] = data[key];
             } else {
@@ -560,12 +553,12 @@ export default class Mention extends LightningElement {
                 if (mentionCharIndex > prev.mentionCharIndex) {
                     return {
                         mentionChar,
-                        mentionCharIndex,
+                        mentionCharIndex
                     };
                 }
                 return {
                     mentionChar: prev.mentionChar,
-                    mentionCharIndex: prev.mentionCharIndex,
+                    mentionCharIndex: prev.mentionCharIndex
                 };
             },
             { mentionChar: null, mentionCharIndex: -1 }
@@ -578,13 +571,7 @@ export default class Mention extends LightningElement {
 
     hasValidMentionCharIndex(mentionCharIndex, text, isolateChar) {
         if (mentionCharIndex > -1) {
-            if (
-                isolateChar &&
-                !(
-                    mentionCharIndex === 0 ||
-                    !!text[mentionCharIndex - 1].match(/\s/g)
-                )
-            ) {
+            if (isolateChar && !(mentionCharIndex === 0 || !!text[mentionCharIndex - 1].match(/\s/g))) {
                 return false;
             }
             return true;
@@ -602,7 +589,7 @@ export default class Mention extends LightningElement {
 
     enterHandler() {
         if (!this.isOpen) {
-            this.quill.root.setAttribute("contenteditable", false);
+            this.quill.root.setAttribute('contenteditable', false);
             this.dispatchEvent(new CustomEvent('enterkey'));
         }
         return true;
@@ -636,52 +623,57 @@ export default class Mention extends LightningElement {
     }
 
     showMentionList() {
-        if (this.options.positioningStrategy === "fixed") {
+        if (this.options.positioningStrategy === 'fixed') {
             document.body.appendChild(this.mentionContainer);
         } else {
             this.quill.container.appendChild(this.mentionContainer);
         }
 
-        this.mentionContainer.style.visibility = "hidden";
-        this.mentionContainer.style.display = "";
+        this.mentionContainer.style.visibility = 'hidden';
+        this.mentionContainer.style.display = '';
         this.mentionContainer.scrollTop = 0;
         this.setMentionContainerPosition();
         this.setIsOpen(true);
     }
 
     hideMentionList() {
-        this.mentionContainer.style.display = "none";
+        this.mentionContainer.style.display = 'none';
         this.mentionContainer.remove();
         this.setIsOpen(false);
     }
 
     highlightItem(scrollItemInView = true) {
         for (let i = 0; i < this.mentionList.childNodes.length; i += 1) {
-            this.mentionList.childNodes[i].classList.remove("highlighted");
+            this.mentionList.childNodes[i].classList.remove('highlighted');
         }
-        if (
-            this.itemIndex === -1 ||
-            this.mentionList.childNodes[this.itemIndex].dataset.disabled === "true"
-        ) {
+        if (this.itemIndex === -1 || this.mentionList.childNodes[this.itemIndex].dataset.disabled === 'true') {
             return;
         }
 
-        this.mentionList.childNodes[this.itemIndex].classList.add(
-            "highlighted"
-        );
+        this.mentionList.childNodes[this.itemIndex].classList.add('highlighted');
         if (scrollItemInView) {
-            this.mentionList.childNodes[this.itemIndex].scrollIntoView();
+            // this.mentionList.childNodes[this.itemIndex].scrollIntoView();
+            const itemHeight = this.mentionList.childNodes[this.itemIndex].offsetHeight;
+            const itemPos = this.mentionList.childNodes[this.itemIndex].offsetTop;
+            const containerTop = this.mentionContainer.scrollTop;
+            const containerBottom = containerTop + this.mentionContainer.offsetHeight;
+
+            if (itemPos < containerTop) {
+                // Scroll up if the item is above the top of the container
+                this.mentionContainer.scrollTop = itemPos;
+            } else if (itemPos > containerBottom - itemHeight) {
+                // scroll down if any part of the element is below the bottom of the container
+                this.mentionContainer.scrollTop += itemPos - containerBottom + itemHeight;
+            }
         }
     }
 
     getItemData() {
         const { link } = this.mentionList.childNodes[this.itemIndex].dataset;
-        const hasLinkValue = typeof link !== "undefined";
+        const hasLinkValue = typeof link !== 'undefined';
         const itemTarget = this.mentionList.childNodes[this.itemIndex].dataset.target;
         if (hasLinkValue) {
-            this.mentionList.childNodes[
-                this.itemIndex
-            ].dataset.value = `<a href="${link}" target=${
+            this.mentionList.childNodes[this.itemIndex].dataset.value = `<a href="${link}" target=${
                 itemTarget || this.options.linkTarget
             }>${this.mentionList.childNodes[this.itemIndex].dataset.value}`;
         }
@@ -698,10 +690,10 @@ export default class Mention extends LightningElement {
         }
         const data = this.getItemData();
         // LWC Locker Service converts Boolean dataset properties into String and I cannot find a way to stop this
-        if (data.disabled === "true") {
+        if (data.disabled === 'true') {
             return;
         }
-        this.options.onSelect(data, (asyncData) => {
+        this.options.onSelect(data, asyncData => {
             this.insertItem(asyncData);
         });
         this.hideMentionList();
@@ -713,29 +705,20 @@ export default class Mention extends LightningElement {
             return;
         }
         if (!this.options.showDenotationChar) {
-            render.denotationChar = "";
+            render.denotationChar = '';
         }
 
         let insertAtPos;
 
         if (!programmaticInsert) {
             insertAtPos = this.mentionCharPos;
-            this.quill.deleteText(
-                this.mentionCharPos,
-                this.cursorPos - this.mentionCharPos,
-                Quill.sources.USER
-            );
+            this.quill.deleteText(this.mentionCharPos, this.cursorPos - this.mentionCharPos, Quill.sources.USER);
         } else {
             insertAtPos = this.cursorPos;
         }
-        this.quill.insertEmbed(
-            insertAtPos,
-            this.options.blotName,
-            render,
-            Quill.sources.USER
-        );
+        this.quill.insertEmbed(insertAtPos, this.options.blotName, render, Quill.sources.USER);
         if (this.options.spaceAfterInsert) {
-            this.quill.insertText(insertAtPos + 1, " ", Quill.sources.USER);
+            this.quill.insertText(insertAtPos + 1, ' ', Quill.sources.USER);
             // setSelection here sets cursor position
             this.quill.setSelection(insertAtPos + 2, Quill.sources.USER);
         } else {
@@ -788,26 +771,21 @@ export default class Mention extends LightningElement {
             return;
         }
 
-        if (
-            this.mentionContainer.getElementsByClassName("ql-mention-loading")
-                .length > 0
-        ) {
+        if (this.mentionContainer.getElementsByClassName('ql-mention-loading').length > 0) {
             this.showMentionList();
             return;
         }
 
-        this.mentionList.innerHTML = "";
-        let loadingDiv = document.createElement("div");
-        loadingDiv.className = "ql-mention-loading";
+        this.mentionList.innerHTML = '';
+        let loadingDiv = document.createElement('div');
+        loadingDiv.className = 'ql-mention-loading';
         loadingDiv.innerHTML = this.options.renderLoading();
         this.mentionContainer.append(loadingDiv);
         this.showMentionList();
     }
 
     removeLoading() {
-        var loadingDiv = this.mentionContainer.getElementsByClassName(
-            "ql-mention-loading"
-        );
+        var loadingDiv = this.mentionContainer.getElementsByClassName('ql-mention-loading');
         if (loadingDiv.length > 0) {
             loadingDiv[0].remove();
         }
@@ -818,21 +796,19 @@ export default class Mention extends LightningElement {
             this.removeLoading();
 
             this.values = data;
-            this.mentionList.innerHTML = "";
+            this.mentionList.innerHTML = '';
 
             let initialSelection = -1;
 
             for (let i = 0; i < data.length; i += 1) {
-                const li = document.createElement("li");
-                li.role = "presentation";
+                const li = document.createElement('li');
+                li.role = 'presentation';
                 li.className =
-                    "lookup__item optionItem medium default uiAutocompleteOption forceChatterSelectMentionOption " +
-                    (this.options.listItemClass
-                        ? this.options.listItemClass
-                        : "");
+                    'lookup__item optionItem medium default uiAutocompleteOption forceChatterSelectMentionOption ' +
+                    (this.options.listItemClass ? this.options.listItemClass : '');
                 li.style = data[i].disabled ? 'color: lightgray; cursor: auto' : '';
                 if (data[i].disabled) {
-                    li.className += " disabled";
+                    li.className += ' disabled';
                 } else if (initialSelection === -1) {
                     initialSelection = i;
                 }
@@ -847,13 +823,7 @@ export default class Mention extends LightningElement {
                     li.onmouseenter = this.onDisabledItemMouseEnter.bind(this);
                 }
                 li.dataset.denotationChar = mentionChar;
-                this.mentionList.appendChild(
-                    this.attachDataValues(
-                        li,
-                        data[i],
-                        this.options.dataAttributes
-                    )
-                );
+                this.mentionList.appendChild(this.attachDataValues(li, data[i], this.options.dataAttributes));
             }
             this.itemIndex = initialSelection;
             this.highlightItem();
@@ -871,8 +841,7 @@ export default class Mention extends LightningElement {
         do {
             increment++;
             newIndex = (this.itemIndex + increment) % this.values.length;
-            disabled =
-                this.mentionList.childNodes[newIndex].dataset.disabled === "true";
+            disabled = this.mentionList.childNodes[newIndex].dataset.disabled === 'true';
             if (increment === this.values.length + 1) {
                 //we've wrapped around w/o finding an enabled item
                 newIndex = -1;
@@ -893,7 +862,7 @@ export default class Mention extends LightningElement {
         do {
             decrement++;
             newIndex = (this.itemIndex + this.values.length - decrement) % this.values.length;
-            disabled = this.mentionList.childNodes[newIndex].dataset.disabled === "true";
+            disabled = this.mentionList.childNodes[newIndex].dataset.disabled === 'true';
             if (decrement === this.values.length + 1) {
                 //we've wrapped around w/o finding an enabled item
                 newIndex = -1;
@@ -907,8 +876,7 @@ export default class Mention extends LightningElement {
     }
 
     containerBottomIsNotVisible(topPos, containerPos) {
-        const mentionContainerBottom =
-            topPos + this.mentionContainer.offsetHeight + containerPos.top;
+        const mentionContainerBottom = topPos + this.mentionContainer.offsetHeight + containerPos.top;
         return mentionContainerBottom > window.pageYOffset + window.innerHeight;
     }
 
@@ -917,10 +885,8 @@ export default class Mention extends LightningElement {
             return false;
         }
 
-        const rightPos =
-            leftPos + this.mentionContainer.offsetWidth + containerPos.left;
-        const browserWidth =
-            window.pageXOffset + document.documentElement.clientWidth;
+        const rightPos = leftPos + this.mentionContainer.offsetWidth + containerPos.left;
+        const browserWidth = window.pageXOffset + document.documentElement.clientWidth;
         return rightPos > browserWidth;
     }
 
@@ -936,7 +902,7 @@ export default class Mention extends LightningElement {
     }
 
     setMentionContainerPosition() {
-        if (this.options.positioningStrategy === "fixed") {
+        if (this.options.positioningStrategy === 'fixed') {
             this.setMentionContainerPosition_Fixed();
         } else {
             this.setMentionContainerPosition_Normal();
@@ -960,21 +926,18 @@ export default class Mention extends LightningElement {
         }
 
         if (this.containerRightIsNotVisible(leftPos, containerPos)) {
-            const containerWidth =
-                this.mentionContainer.offsetWidth + this.options.offsetLeft;
+            const containerWidth = this.mentionContainer.offsetWidth + this.options.offsetLeft;
             const quillWidth = containerPos.width;
             leftPos = quillWidth - containerWidth;
         }
 
         // handle vertical positioning
-        if (this.options.defaultMenuOrientation === "top") {
+        if (this.options.defaultMenuOrientation === 'top') {
             // Attempt to align the mention container with the top of the quill editor
             if (this.options.fixMentionsToQuill) {
                 topPos = -1 * (containerHeight + this.options.offsetTop);
             } else {
-                topPos =
-                    mentionCharPos.top -
-                    (containerHeight + this.options.offsetTop);
+                topPos = mentionCharPos.top - (containerHeight + this.options.offsetTop);
             }
 
             // default to bottom if the top is not visible
@@ -1010,30 +973,24 @@ export default class Mention extends LightningElement {
         }
 
         if (topPos >= 0) {
-            this.options.mentionContainerClass
-                .split(" ")
-                .forEach((className) => {
-                    this.mentionContainer.classList.add(`${className}-bottom`);
-                    this.mentionContainer.classList.remove(`${className}-top`);
-                });
+            this.options.mentionContainerClass.split(' ').forEach(className => {
+                this.mentionContainer.classList.add(`${className}-bottom`);
+                this.mentionContainer.classList.remove(`${className}-top`);
+            });
         } else {
-            this.options.mentionContainerClass
-                .split(" ")
-                .forEach((className) => {
-                    this.mentionContainer.classList.add(`${className}-top`);
-                    this.mentionContainer.classList.remove(
-                        `${className}-bottom`
-                    );
-                });
+            this.options.mentionContainerClass.split(' ').forEach(className => {
+                this.mentionContainer.classList.add(`${className}-top`);
+                this.mentionContainer.classList.remove(`${className}-bottom`);
+            });
         }
 
         this.mentionContainer.style.top = `${topPos}px`;
         this.mentionContainer.style.left = `${leftPos}px`;
-        this.mentionContainer.style.visibility = "visible";
+        this.mentionContainer.style.visibility = 'visible';
     }
 
     setMentionContainerPosition_Fixed() {
-        this.mentionContainer.style.position = "fixed";
+        this.mentionContainer.style.position = 'fixed';
         this.mentionContainer.style.height = null;
 
         const containerPos = this.quill.container.getBoundingClientRect();
@@ -1042,13 +999,11 @@ export default class Mention extends LightningElement {
             left: containerPos.left + mentionCharPos.left,
             top: containerPos.top + mentionCharPos.top,
             width: 0,
-            height: mentionCharPos.height,
+            height: mentionCharPos.height
         };
 
         //Which rectangle should it be relative to
-        const relativeToPos = this.options.fixMentionsToQuill
-            ? containerPos
-            : mentionCharPosAbsolute;
+        const relativeToPos = this.options.fixMentionsToQuill ? containerPos : mentionCharPosAbsolute;
 
         let topPos = this.options.offsetTop;
         let leftPos = this.options.offsetLeft;
@@ -1061,87 +1016,63 @@ export default class Mention extends LightningElement {
             leftPos += relativeToPos.left;
 
             //if its off the righ edge, push it back
-            if (
-                leftPos + this.mentionContainer.offsetWidth >
-                document.documentElement.clientWidth
-            ) {
-                leftPos -=
-                    leftPos +
-                    this.mentionContainer.offsetWidth -
-                    document.documentElement.clientWidth;
+            if (leftPos + this.mentionContainer.offsetWidth > document.documentElement.clientWidth) {
+                leftPos -= leftPos + this.mentionContainer.offsetWidth - document.documentElement.clientWidth;
             }
         }
 
         const availableSpaceTop = relativeToPos.top;
-        const availableSpaceBottom =
-            document.documentElement.clientHeight -
-            (relativeToPos.top + relativeToPos.height);
+        const availableSpaceBottom = document.documentElement.clientHeight - (relativeToPos.top + relativeToPos.height);
 
-        const fitsBottom =
-            this.mentionContainer.offsetHeight <= availableSpaceBottom;
+        const fitsBottom = this.mentionContainer.offsetHeight <= availableSpaceBottom;
         const fitsTop = this.mentionContainer.offsetHeight <= availableSpaceTop;
 
         let placement;
 
-        if (this.options.defaultMenuOrientation === "top" && fitsTop) {
-            placement = "top";
-        } else if (
-            this.options.defaultMenuOrientation === "bottom" &&
-            fitsBottom
-        ) {
-            placement = "bottom";
+        if (this.options.defaultMenuOrientation === 'top' && fitsTop) {
+            placement = 'top';
+        } else if (this.options.defaultMenuOrientation === 'bottom' && fitsBottom) {
+            placement = 'bottom';
         } else {
             //it doesnt fit either so put it where there's the most space
-            placement =
-                availableSpaceBottom > availableSpaceTop ? "bottom" : "top";
+            placement = availableSpaceBottom > availableSpaceTop ? 'bottom' : 'top';
         }
 
-        if (placement === "bottom") {
+        if (placement === 'bottom') {
             topPos = relativeToPos.top + relativeToPos.height;
             if (!fitsBottom) {
                 //shrink it to fit
                 //3 is a bit of a fudge factor so it doesnt touch the edge of the screen
-                this.mentionContainer.style.height =
-                    availableSpaceBottom - 3 + "px";
+                this.mentionContainer.style.height = availableSpaceBottom - 3 + 'px';
             }
 
-            this.options.mentionContainerClass
-                .split(" ")
-                .forEach((className) => {
-                    this.mentionContainer.classList.add(`${className}-bottom`);
-                    this.mentionContainer.classList.remove(`${className}-top`);
-                });
+            this.options.mentionContainerClass.split(' ').forEach(className => {
+                this.mentionContainer.classList.add(`${className}-bottom`);
+                this.mentionContainer.classList.remove(`${className}-top`);
+            });
         } else {
             topPos = relativeToPos.top - this.mentionContainer.offsetHeight;
             if (!fitsTop) {
                 //shrink it to fit
                 //3 is a bit of a fudge factor so it doesnt touch the edge of the screen
-                this.mentionContainer.style.height =
-                    availableSpaceTop - 3 + "px";
+                this.mentionContainer.style.height = availableSpaceTop - 3 + 'px';
                 topPos = 3;
             }
 
-            this.options.mentionContainerClass
-                .split(" ")
-                .forEach((className) => {
-                    this.mentionContainer.classList.add(`${className}-top`);
-                    this.mentionContainer.classList.remove(
-                        `${className}-bottom`
-                    );
-                });
+            this.options.mentionContainerClass.split(' ').forEach(className => {
+                this.mentionContainer.classList.add(`${className}-top`);
+                this.mentionContainer.classList.remove(`${className}-bottom`);
+            });
         }
 
         this.mentionContainer.style.top = `${topPos}px`;
         this.mentionContainer.style.left = `${leftPos}px`;
-        this.mentionContainer.style.visibility = "visible";
+        this.mentionContainer.style.visibility = 'visible';
     }
 
     getTextBeforeCursor() {
         const startPos = Math.max(0, this.cursorPos - this.options.maxChars);
-        const textBeforeCursorPos = this.quill.getText(
-            startPos,
-            this.cursorPos - startPos
-        );
+        const textBeforeCursorPos = this.quill.getText(startPos, this.cursorPos - startPos);
         return textBeforeCursorPos;
     }
 
@@ -1156,32 +1087,20 @@ export default class Mention extends LightningElement {
             this.options.mentionDenotationChars
         );
 
-        if (
-            this.hasValidMentionCharIndex(
-                mentionCharIndex,
-                textBeforeCursor,
-                this.options.isolateCharacter
-            )
-        ) {
-            const mentionCharPos =
-                this.cursorPos - (textBeforeCursor.length - mentionCharIndex);
+        if (this.hasValidMentionCharIndex(mentionCharIndex, textBeforeCursor, this.options.isolateCharacter)) {
+            const mentionCharPos = this.cursorPos - (textBeforeCursor.length - mentionCharIndex);
             this.mentionCharPos = mentionCharPos;
-            const textAfter = textBeforeCursor.substring(
-                mentionCharIndex + mentionChar.length
-            );
+            const textAfter = textBeforeCursor.substring(mentionCharIndex + mentionChar.length);
             if (
                 textAfter.length >= this.options.minChars &&
-                this.hasValidChars(
-                    textAfter,
-                    this.getAllowedCharsRegex(mentionChar)
-                )
+                this.hasValidChars(textAfter, this.getAllowedCharsRegex(mentionChar))
             ) {
                 if (this.existingSourceExecutionToken) {
                     this.existingSourceExecutionToken.abandoned = true;
                 }
                 this.renderLoading();
                 let sourceRequestToken = {
-                    abandoned: false,
+                    abandoned: false
                 };
                 this.existingSourceExecutionToken = sourceRequestToken;
                 this.options.source(
@@ -1210,17 +1129,15 @@ export default class Mention extends LightningElement {
     }
 
     onTextChange(delta, oldDelta, source) {
-        if (source === "user") {
+        if (source === 'user') {
             this.onSomethingChange();
             this.dispatchEvent(
-                new CustomEvent(
-                    'edit', {
-                        detail: {
-                            text: this.text,
-                            deltas: this.quill.editor.delta.ops
-                        }
+                new CustomEvent('edit', {
+                    detail: {
+                        text: this.text,
+                        deltas: this.quill.editor.delta.ops
                     }
-                )
+                })
             );
         }
     }
@@ -1243,13 +1160,11 @@ export default class Mention extends LightningElement {
     // new LWC JS Code
     @api get text() {
         return this.quill.editor.delta.ops
-            .map((x) =>
-                "string" == typeof x.insert ? x.insert : x.insert.mention.Id
-            )
-            .join("");
+            .map(x => ('string' == typeof x.insert ? x.insert : x.insert.mention.Id))
+            .join('');
     }
-
+    _text;
     set text(value) {
-        this.quill.setText(value);
+        this._text = value;
     }
 }

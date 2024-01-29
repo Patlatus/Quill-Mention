@@ -1,3 +1,7 @@
+# How to Use
+[Quill @mention and #hashtag in LWC text area
+](https://www.forcetrails.com/2023/08/quill-mention-and-hashtag-in-lwc-text-area-input.html)
+
 # Mention
 
 Custom Salesforce Quill Mention.
